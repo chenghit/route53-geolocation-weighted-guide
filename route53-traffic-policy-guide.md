@@ -121,6 +121,117 @@ Policy Document 由三部分组成，对应架构图中的三层：
 
 ---
 
+## 3b. Health Check 集成（可选配置）
+
+> Health Check **不是必须的**。如果你有自己的监控系统并能通过 API 动态调整权重或切换策略版本，可以跳过此节。
+>
+> 配置 Health Check 后，当某个 CDN 端点不可用时，Route 53 会自动将流量切到健康端点，无需人工干预。
+
+### 工作原理
+
+Traffic Policy 支持在 Weighted Rule 的每个 Item 上添加 `HealthCheck` 字段，值为 Health Check ID。当 Health Check 判定端点不健康时，Route 53 自动跳过该端点，将流量分配给其他健康端点。
+
+### 创建 Health Check
+
+Health Check 需要单独创建，然后在 Policy Document 中引用其 ID。
+
+```bash
+# 为 Akamai 创建 Health Check（非 AWS 端点，$0.75/月）
+AKAMAI_HC=$(aws route53 create-health-check \
+  --caller-reference "akamai-$(date +%s)" \
+  --health-check-config '{
+    "Type": "HTTPS",
+    "FullyQualifiedDomainName": "www.example.com.edgekey.net",
+    "Port": 443,
+    "ResourcePath": "/",
+    "RequestInterval": 30,
+    "FailureThreshold": 3
+  }' \
+  --query 'HealthCheck.Id' --output text)
+
+# 为 CloudFront 创建 Health Check（AWS 端点，$0.50/月）
+CF_HC=$(aws route53 create-health-check \
+  --caller-reference "cloudfront-$(date +%s)" \
+  --health-check-config '{
+    "Type": "HTTPS",
+    "FullyQualifiedDomainName": "d111111abcdef8.cloudfront.net",
+    "Port": 443,
+    "ResourcePath": "/",
+    "RequestInterval": 30,
+    "FailureThreshold": 3
+  }' \
+  --query 'HealthCheck.Id' --output text)
+
+echo "Akamai HC: $AKAMAI_HC"
+echo "CloudFront HC: $CF_HC"
+```
+
+> Python 等效：
+
+```python
+import time
+
+def create_health_check(fqdn: str, ref_suffix: str) -> str:
+    resp = r53.create_health_check(
+        CallerReference=f"{ref_suffix}-{int(time.time())}",
+        HealthCheckConfig={
+            "Type": "HTTPS",
+            "FullyQualifiedDomainName": fqdn,
+            "Port": 443,
+            "ResourcePath": "/",  # 替换为 CDN 上能返回 2xx 的路径
+            "RequestInterval": 30,
+            "FailureThreshold": 3,
+        },
+    )
+    return resp["HealthCheck"]["Id"]
+
+# akamai_hc = create_health_check("www.example.com.edgekey.net", "akamai")
+# cf_hc = create_health_check("d111111abcdef8.cloudfront.net", "cloudfront")
+```
+
+### 在 Policy Document 中引用 Health Check
+
+将 Health Check ID 添加到 Weighted Rule 的每个 Item 中：
+
+```json
+"india_weighted": {
+  "RuleType": "weighted",
+  "Items": [
+    {
+      "EndpointReference": "ep_akamai",
+      "Weight": "1",
+      "HealthCheck": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
+    },
+    {
+      "EndpointReference": "ep_cloudfront",
+      "Weight": "1",
+      "HealthCheck": "cccccccc-4444-5555-6666-dddddddddddd"
+    }
+  ]
+}
+```
+
+> ⚠️ **`ResourcePath` 必须是 CDN 上能返回 2xx 的路径。** 如果 `/` 返回 301/403，请替换为实际可用的路径。
+>
+> ⚠️ Health Check ID 是写在 Policy Document JSON 里的。修改 Health Check 配置（如换路径）不需要创建新策略版本，但**添加或移除** Health Check 需要创建新版本。
+
+### Health Check 费用
+
+| 端点类型 | 基础 Health Check | 高级（含 HTTPS/字符串匹配） |
+|---------|-----------------|------------------------|
+| AWS 端点（CloudFront 等） | $0.50/月/个 | $1.00/月/个 |
+| 非 AWS 端点（Akamai 等） | $0.75/月/个 | $2.00/月/个 |
+
+### 不使用 Health Check 的替代方案
+
+如果你有自己的监控系统，可以在检测到 CDN 故障后：
+- 创建新策略版本，将故障端点的 Weight 设为 `"0"`
+- 更新 Instance 指向新版本
+
+效果等同于 Health Check 的自动故障转移，但需要你的监控系统主动触发。
+
+---
+
 ## 4. AWS CLI 完整操作
 
 ### 4.1 前置准备

@@ -107,6 +107,8 @@ aws route53 create-hosted-zone \
 # 从输出中获取 HostedZoneId
 ```
 
+> **API 参考**：[ListHostedZones](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/ListHostedZones) | [CreateHostedZone](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/CreateHostedZone)
+
 ### 3.2 创建 Health Check（可选配置）
 
 > Route 53 的加权和地理位置路由**不依赖 Health Check 即可正常工作**。Health Check 的作用是在端点不可用时自动将流量切到健康端点。如果你有自己的监控系统并能通过 API 动态调整权重，可以跳过此步骤。
@@ -154,6 +156,8 @@ echo "  AKAMAI_HC=$AKAMAI_HC"
 echo "  CF_HC=$CF_HC"
 ```
 
+> **API 参考**：[CreateHealthCheck](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/CreateHealthCheck)
+
 </details>
 
 ### 3.3 创建加权记录（第二层：india-weighted.example.com）
@@ -195,6 +199,8 @@ aws route53 change-resource-record-sets \
   }'
 ```
 
+> **API 参考**：[ChangeResourceRecordSets](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/ChangeResourceRecordSets)
+
 ### 3.4 创建地理位置记录（第一层：www.example.com）
 
 ```bash
@@ -227,6 +233,8 @@ aws route53 change-resource-record-sets \
     ]
   }'
 ```
+
+> **API 参考**：[ChangeResourceRecordSets](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/ChangeResourceRecordSets)
 
 ### 3.5 验证记录
 
@@ -305,10 +313,12 @@ def build_weighted_record(name, set_id, weight, target, hc_id=None):
     return record
 ```
 
+> **API 参考**：[ListHostedZones](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/ListHostedZones) | [ChangeResourceRecordSets](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/ChangeResourceRecordSets)
+
 ### 4.1 创建配置
 
 ```python
-# === 依赖 4.0 的配置参数与工具函数 ===
+# === 依赖 4.0 ===
 
 def create_health_check(fqdn: str, ref_suffix: str) -> str:
     """创建 HTTPS Health Check，返回 Health Check ID。"""
@@ -424,10 +434,12 @@ if __name__ == "__main__":
     print("  dig @8.8.8.8 www.example.com +subnet=103.21.244.0/24")
 ```
 
+> **API 参考**：[CreateHealthCheck](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/CreateHealthCheck) | [ChangeResourceRecordSets](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/ChangeResourceRecordSets)
+
 ### 4.2 验证配置
 
 ```python
-# === 依赖 4.0 的配置参数与工具函数 ===
+# === 依赖 4.0 ===
 
 def get_authoritative_ns() -> str:
     """获取 Hosted Zone 的第一个权威 NS，用于绕过缓存验证加权分布。"""
@@ -472,12 +484,14 @@ def get_health_check_status(hc_id: str):
 # get_authoritative_ns()
 ```
 
+> **API 参考**：[GetHostedZone](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/GetHostedZone) | [ListResourceRecordSets](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/ListResourceRecordSets) | [GetHealthCheckStatus](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/GetHealthCheckStatus)
+
 ### 4.3 回滚/清理
 
 > 如果你使用 CLI 回滚，见第 7 节。以下是等效的 Python 函数。
 
 ```python
-# === 依赖 4.0 的配置参数与工具函数，以及 4.2 的 list_records ===
+# === 依赖 4.0 + 4.2 ===
 
 def find_health_check_id(fqdn: str) -> "str | None":
     """根据 FQDN 查找 Health Check ID（shell 变量丢失时使用）。"""
@@ -561,6 +575,274 @@ def rollback():
 # rollback()
 ```
 
+> **API 参考**：[ListHealthChecks](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/ListHealthChecks) | [ChangeResourceRecordSets](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/ChangeResourceRecordSets) | [DeleteHealthCheck](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/DeleteHealthCheck)
+
+---
+
+## 4b. Java SDK v2 完整代码
+
+> Maven 依赖：`software.amazon.awssdk:route53`。建议使用 BOM 管理版本：
+>
+> ```xml
+> <dependencyManagement>
+>   <dependencies>
+>     <dependency>
+>       <groupId>software.amazon.awssdk</groupId>
+>       <artifactId>bom</artifactId>
+>       <version>2.x.y</version> <!-- 替换为最新版本 -->
+>       <type>pom</type>
+>       <scope>import</scope>
+>     </dependency>
+>   </dependencies>
+> </dependencyManagement>
+>
+> <dependencies>
+>   <dependency>
+>     <groupId>software.amazon.awssdk</groupId>
+>     <artifactId>route53</artifactId>
+>   </dependency>
+> </dependencies>
+> ```
+
+以下代码分为三部分，对应 Python 章节的 4.0–4.3。
+
+### 4b.0 配置参数与工具方法
+
+```java
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.route53.Route53Client;
+import software.amazon.awssdk.services.route53.model.*;
+import software.amazon.awssdk.services.route53.waiters.Route53Waiter;
+
+import java.util.List;
+
+// Route 53 是全局服务
+Route53Client r53 = Route53Client.builder()
+    .region(Region.AWS_GLOBAL)
+    .build();
+
+// ========== 配置参数（替换为实际值）==========
+String HOSTED_ZONE_ID = "Z1234567890ABC";
+String AKAMAI_DOMAIN  = "www.example.com.edgekey.net";
+String CF_DOMAIN      = "d111111abcdef8.cloudfront.net";
+String DEFAULT_TARGET = "your-default-endpoint.example.com";
+
+// 查找 Hosted Zone ID（如果不知道）
+String findHostedZoneId(String domain) {
+    return r53.listHostedZones().hostedZones().stream()
+        .filter(z -> z.name().equals(domain + "."))
+        .findFirst()
+        .map(z -> z.id().replace("/hostedzone/", ""))
+        .orElseThrow(() -> new RuntimeException("未找到域名 " + domain + " 的 Hosted Zone"));
+}
+
+// 提交变更并等待生效
+String applyChange(ChangeBatch batch) {
+    ChangeResourceRecordSetsResponse resp = r53.changeResourceRecordSets(
+        ChangeResourceRecordSetsRequest.builder()
+            .hostedZoneId(HOSTED_ZONE_ID)
+            .changeBatch(batch)
+            .build());
+    String changeId = resp.changeInfo().id();
+    System.out.println("  Change " + changeId + " 状态: " + resp.changeInfo().statusAsString());
+
+    // 等待变更生效（PENDING → INSYNC）
+    try (Route53Waiter waiter = r53.waiter()) {
+        waiter.waitUntilResourceRecordSetsChanged(
+            GetChangeRequest.builder().id(changeId).build());
+    }
+    System.out.println("  Change " + changeId + " 已生效 (INSYNC)");
+    return changeId;
+}
+
+// 构建单条加权 CNAME 记录
+ResourceRecordSet buildWeightedRecord(String name, String setId, long weight,
+                                       String target, String hcId) {
+    ResourceRecordSet.Builder builder = ResourceRecordSet.builder()
+        .name(name)
+        .type(RRType.CNAME)
+        .setIdentifier(setId)
+        .weight(weight)
+        .ttl(60L)
+        .resourceRecords(ResourceRecord.builder().value(target).build());
+    if (hcId != null) {
+        builder.healthCheckId(hcId);
+    }
+    return builder.build();
+}
+```
+
+> **API 参考**：[ListHostedZones](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/ListHostedZones) | [ChangeResourceRecordSets](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/ChangeResourceRecordSets)
+
+### 4b.1 创建配置
+
+```java
+// === 依赖 4b.0 ===
+
+// 创建加权记录（第二层：india-weighted.example.com）
+System.out.println("创建加权记录 (india-weighted.example.com)...");
+applyChange(ChangeBatch.builder()
+    .changes(
+        Change.builder().action(ChangeAction.UPSERT).resourceRecordSet(
+            buildWeightedRecord("india-weighted.example.com", "india-akamai",
+                1, AKAMAI_DOMAIN, null)).build(),
+        Change.builder().action(ChangeAction.UPSERT).resourceRecordSet(
+            buildWeightedRecord("india-weighted.example.com", "india-cloudfront",
+                1, CF_DOMAIN, null)).build()
+    ).build());
+
+// 创建地理位置记录（第一层：www.example.com）
+System.out.println("创建地理位置记录 (www.example.com)...");
+applyChange(ChangeBatch.builder()
+    .changes(
+        Change.builder().action(ChangeAction.UPSERT).resourceRecordSet(
+            ResourceRecordSet.builder()
+                .name("www.example.com")
+                .type(RRType.CNAME)
+                .setIdentifier("geo-india")
+                .geoLocation(GeoLocation.builder().countryCode("IN").build())
+                .ttl(60L)
+                .resourceRecords(ResourceRecord.builder()
+                    .value("india-weighted.example.com").build())
+                .build()).build(),
+        Change.builder().action(ChangeAction.UPSERT).resourceRecordSet(
+            ResourceRecordSet.builder()
+                .name("www.example.com")
+                .type(RRType.CNAME)
+                .setIdentifier("geo-default")
+                .geoLocation(GeoLocation.builder().countryCode("*").build())
+                .ttl(60L)
+                .resourceRecords(ResourceRecord.builder()
+                    .value(DEFAULT_TARGET).build())
+                .build()).build()
+    ).build());
+
+System.out.println("配置完成！");
+
+// 动态调整权重（供外部监控系统调用）
+void updateWeights(long akamaiWeight, long cfWeight) {
+    applyChange(ChangeBatch.builder()
+        .changes(
+            Change.builder().action(ChangeAction.UPSERT).resourceRecordSet(
+                buildWeightedRecord("india-weighted.example.com", "india-akamai",
+                    akamaiWeight, AKAMAI_DOMAIN, null)).build(),
+            Change.builder().action(ChangeAction.UPSERT).resourceRecordSet(
+                buildWeightedRecord("india-weighted.example.com", "india-cloudfront",
+                    cfWeight, CF_DOMAIN, null)).build()
+        ).build());
+}
+
+// 使用示例：updateWeights(9, 1);  // 90:10 灰度
+```
+
+> **API 参考**：[ChangeResourceRecordSets](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/ChangeResourceRecordSets)
+
+### 4b.2 验证配置
+
+```java
+// === 依赖 4b.0 ===
+
+// 获取权威 NS
+String getAuthoritativeNs() {
+    GetHostedZoneResponse resp = r53.getHostedZone(
+        GetHostedZoneRequest.builder().id(HOSTED_ZONE_ID).build());
+    String ns = resp.delegationSet().nameServers().get(0);
+    System.out.println("权威 NS: " + ns);
+    System.out.println("验证命令: dig @" + ns + " india-weighted.example.com +short");
+    return ns;
+}
+
+// 列出指定域名的所有记录
+List<ResourceRecordSet> listRecords(String name) {
+    ListResourceRecordSetsResponse resp = r53.listResourceRecordSets(
+        ListResourceRecordSetsRequest.builder()
+            .hostedZoneId(HOSTED_ZONE_ID)
+            .startRecordName(name)
+            .startRecordType(RRType.CNAME)
+            .maxItems("10")
+            .build());
+
+    List<ResourceRecordSet> records = resp.resourceRecordSets().stream()
+        .filter(r -> r.name().equals(name + ".") || r.name().equals(name))
+        .toList();
+
+    for (ResourceRecordSet r : records) {
+        List<String> vals = r.resourceRecords().stream()
+            .map(ResourceRecord::value).toList();
+        System.out.printf("  SetId=%s  Weight=%s  Geo=%s  -> %s  HC=%s%n",
+            r.setIdentifier(), r.weight(), r.geoLocation(), vals,
+            r.healthCheckId() != null ? r.healthCheckId() : "无");
+    }
+    return records;
+}
+
+// 使用示例：
+// listRecords("www.example.com");
+// listRecords("india-weighted.example.com");
+// getAuthoritativeNs();
+```
+
+> **API 参考**：[GetHostedZone](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/GetHostedZone) | [ListResourceRecordSets](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/ListResourceRecordSets)
+
+### 4b.3 回滚/清理
+
+```java
+// === 依赖 4b.0 + 4b.2 ===
+
+// 删除地理位置记录
+void deleteGeolocationRecords() {
+    applyChange(ChangeBatch.builder()
+        .changes(
+            Change.builder().action(ChangeAction.DELETE).resourceRecordSet(
+                ResourceRecordSet.builder()
+                    .name("www.example.com")
+                    .type(RRType.CNAME)
+                    .setIdentifier("geo-india")
+                    .geoLocation(GeoLocation.builder().countryCode("IN").build())
+                    .ttl(60L)
+                    .resourceRecords(ResourceRecord.builder()
+                        .value("india-weighted.example.com").build())
+                    .build()).build(),
+            Change.builder().action(ChangeAction.DELETE).resourceRecordSet(
+                ResourceRecordSet.builder()
+                    .name("www.example.com")
+                    .type(RRType.CNAME)
+                    .setIdentifier("geo-default")
+                    .geoLocation(GeoLocation.builder().countryCode("*").build())
+                    .ttl(60L)
+                    .resourceRecords(ResourceRecord.builder()
+                        .value(DEFAULT_TARGET).build())
+                    .build()).build()
+        ).build());
+}
+
+// 删除加权记录（自动读取当前值，避免 InvalidChangeBatch）
+void deleteWeightedRecords() {
+    List<ResourceRecordSet> records = listRecords("india-weighted.example.com");
+    if (records.isEmpty()) return;
+
+    List<Change> changes = records.stream()
+        .map(r -> Change.builder().action(ChangeAction.DELETE).resourceRecordSet(r).build())
+        .toList();
+    applyChange(ChangeBatch.builder().changes(changes).build());
+}
+
+// 完整回滚
+void rollback() {
+    System.out.println("Step 1: 删除地理位置记录...");
+    deleteGeolocationRecords();
+
+    System.out.println("Step 2: 删除加权记录...");
+    deleteWeightedRecords();
+
+    System.out.println("回滚完成。请记得恢复 www.example.com 的原始 DNS 记录。");
+}
+
+// 使用示例：rollback();
+```
+
+> **API 参考**：[ChangeResourceRecordSets](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/ChangeResourceRecordSets)
+
 ---
 
 ## 5. 验证方法
@@ -627,6 +909,8 @@ aws route53 get-health-check-status --health-check-id "$AKAMAI_HC"
 aws route53 get-health-check-status --health-check-id "$CF_HC"
 ```
 
+> **API 参考**：[ListResourceRecordSets](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/ListResourceRecordSets) | [GetHealthCheckStatus](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/GetHealthCheckStatus)
+
 > Python 等效：`list_records("www.example.com")` 和 `list_records("india-weighted.example.com")`（见第 4.2 节）
 
 ---
@@ -639,6 +923,7 @@ aws route53 get-health-check-status --health-check-id "$CF_HC"
 - **必须创建 Default 地理位置记录**：如果没有 `CountryCode: "*"` 的默认记录，非印度用户会收到 NXDOMAIN
 - **加权组内所有记录必须同名同类型**：`india-weighted.example.com` 下的两条记录必须都是 CNAME 类型
 - **已有记录冲突**：如果 `www.example.com` 已有非 Geolocation 的 CNAME/A 记录，必须先删除旧记录再创建新的 Geolocation 记录，或使用 `UPSERT`
+- **DELETE 必须精确匹配当前记录**：删除加权记录时，`Weight` 值必须与当前实际值完全一致，否则 Route 53 返回 `InvalidChangeBatch`。如果你之前调整过权重（如灰度切换改成了 9:1），删除前务必先用 `list-resource-record-sets` 查询当前值
 
 ### TTL 建议
 
@@ -707,6 +992,8 @@ aws route53 change-resource-record-sets \
 # 验证无误后，调整为 50:50（Weight 各改为 1）
 ```
 
+> **API 参考**：[ChangeResourceRecordSets](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/ChangeResourceRecordSets)
+
 > Python 等效：`update_weights(akamai_weight=9, cf_weight=1)`（见第 4.1 节）
 
 ---
@@ -732,6 +1019,8 @@ aws route53 list-health-checks \
 AKAMAI_HC="<从上面输出获取>"
 CF_HC="<从上面输出获取>"
 ```
+
+> **API 参考**：[ListHealthChecks](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/ListHealthChecks)
 
 **Step 1: 删除地理位置记录**
 
@@ -766,15 +1055,21 @@ aws route53 change-resource-record-sets \
   }'
 ```
 
+> **API 参考**：[ChangeResourceRecordSets](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/ChangeResourceRecordSets)
+
 **Step 2: 删除加权记录**
 
-> 如果创建时没有挂载 Health Check，删除下面命令中的 `"HealthCheckId"` 行。DELETE 时的记录内容必须与创建时完全一致。
->
-> ⚠️ 如果你之前调整过权重（如灰度切换改成了 9:1），DELETE 命令中的 `Weight` 必须与当前实际值一致，否则会报 `InvalidChangeBatch`。先运行以下命令确认当前值：
-> ```bash
-> aws route53 list-resource-record-sets --hosted-zone-id "$HOSTED_ZONE_ID" \
->   --query "ResourceRecordSets[?Name=='india-weighted.example.com.']"
-> ```
+> ⚠️ DELETE 时的记录内容必须与当前实际值完全一致（包括 Weight、TTL、HealthCheckId），否则会报 `InvalidChangeBatch`。
+> 如果你之前调整过权重（如灰度切换改成了 9:1），必须先查询当前值再删除。
+
+```bash
+# 先查询当前记录的实际值
+aws route53 list-resource-record-sets --hosted-zone-id "$HOSTED_ZONE_ID" \
+  --query "ResourceRecordSets[?Name=='india-weighted.example.com.']"
+# 确认输出中的 Weight、TTL、HealthCheckId，然后用实际值替换下面命令中的对应字段
+```
+
+> 如果创建时没有挂载 Health Check，删除下面命令中的 `"HealthCheckId"` 行。
 
 ```bash
 aws route53 change-resource-record-sets \
@@ -809,6 +1104,8 @@ aws route53 change-resource-record-sets \
   }'
 ```
 
+> **API 参考**：[ListResourceRecordSets](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/ListResourceRecordSets) | [ChangeResourceRecordSets](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/ChangeResourceRecordSets)
+
 **Step 3: 删除 Health Check（如果创建了的话）**
 
 ```bash
@@ -816,6 +1113,8 @@ aws route53 change-resource-record-sets \
 aws route53 delete-health-check --health-check-id "$AKAMAI_HC"
 aws route53 delete-health-check --health-check-id "$CF_HC"
 ```
+
+> **API 参考**：[DeleteHealthCheck](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/DeleteHealthCheck)
 
 > 删除后，记得恢复 `www.example.com` 的原始 DNS 记录。
 

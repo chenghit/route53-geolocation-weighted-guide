@@ -117,7 +117,7 @@ Policy Document 由三部分组成，对应架构图中的三层：
 - `Country: "*"` 是默认兜底，匹配所有未命中的地区和无法映射地理位置的 IP
 - `Weight` 是字符串，范围 `"0"`–`"255"`，值是相对的。`"1":"1"` = 50/50
 - `RecordType` 必须是 `CNAME`（因为目标是外部域名）
-- `AWSPolicyFormatVersion` 支持 `"2015-10-01"` 和 `"2023-05-09"` 两个版本，本场景用哪个都行
+- `AWSPolicyFormatVersion` 支持 `"2015-10-01"` 和 `"2023-05-09"` 两个版本。两者的**唯一区别**是 Geoproximity 规则语法：`2023-05-09` 将 Region/坐标字段重构为嵌套的 `Location` 对象，并新增了 AWS Local Zone 支持。其他规则类型（geo、weighted、latency、failover、multivalue）在两个版本中完全相同。本场景只用 geo + weighted，用哪个都行
 
 ---
 
@@ -166,6 +166,8 @@ echo "Akamai HC: $AKAMAI_HC"
 echo "CloudFront HC: $CF_HC"
 ```
 
+> **API 参考**：[CreateHealthCheck](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/CreateHealthCheck)
+
 > Python 等效：
 
 ```python
@@ -211,8 +213,6 @@ def create_health_check(fqdn: str, ref_suffix: str) -> str:
 }
 ```
 
-> ⚠️ **`ResourcePath` 必须是 CDN 上能返回 2xx 的路径。** 如果 `/` 返回 301/403，请替换为实际可用的路径。
->
 > ⚠️ Health Check ID 是写在 Policy Document JSON 里的。修改 Health Check 配置（如换路径）不需要创建新策略版本，但**添加或移除** Health Check 需要创建新版本。
 
 ### Health Check 费用
@@ -245,6 +245,8 @@ aws route53 list-hosted-zones \
   --query 'HostedZones[?Name==`example.com.`].Id' --output text
 # 输出类似：/hostedzone/Z1234567890ABC，取 Z1234567890ABC 部分
 ```
+
+> **API 参考**：[ListHostedZones](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/ListHostedZones)
 
 > Python 等效：
 
@@ -296,6 +298,8 @@ aws route53 create-traffic-policy \
 # 记录输出中的 TrafficPolicy.Id（POLICY_ID）和 Version（1）
 ```
 
+> **API 参考**：[CreateTrafficPolicy](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/CreateTrafficPolicy)
+
 ### 4.3 创建 Traffic Policy Instance（关联域名）
 
 ```bash
@@ -310,6 +314,8 @@ aws route53 create-traffic-policy-instance \
 # 记录输出中的 TrafficPolicyInstance.Id（INSTANCE_ID）
 ```
 
+> **API 参考**：[CreateTrafficPolicyInstance](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/CreateTrafficPolicyInstance)
+
 ### 4.4 查看 Instance 状态
 
 ```bash
@@ -323,6 +329,8 @@ aws route53 list-traffic-policy-instances-by-policy \
   --traffic-policy-id "$POLICY_ID" \
   --traffic-policy-version 1
 ```
+
+> **API 参考**：[ListTrafficPolicyInstances](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/ListTrafficPolicyInstances) | [ListTrafficPolicyInstancesByPolicy](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/ListTrafficPolicyInstancesByPolicy)
 
 ### 4.5 修改权重（创建新版本 + 更新 Instance）
 
@@ -357,22 +365,29 @@ aws route53 update-traffic-policy-instance \
   --traffic-policy-version 2
 ```
 
+> **API 参考**：[CreateTrafficPolicyVersion](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/CreateTrafficPolicyVersion) | [UpdateTrafficPolicyInstance](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/UpdateTrafficPolicyInstance)
+
 ### 4.6 删除（按顺序）
 
 ```bash
 # Step 1: 删除 Instance（同时删除底层 DNS 记录）
 aws route53 delete-traffic-policy-instance --id "$INSTANCE_ID"
 
-# ⚠️ Instance 删除是异步的，需要等待完全删除后才能删策略版本
-# 检查 Instance 是否已完全删除：
-aws route53 list-traffic-policy-instances \
-  --query "TrafficPolicyInstances[?Id=='$INSTANCE_ID'].State" --output text
-# 返回空值表示已删除；返回 "Deleting" 表示还在进行中，等几秒再查
+# ⚠️ Instance 删除后，底层 DNS 记录的清理需要时间。
+# 必须等待 Instance 完全消失后才能删除策略版本，否则会报 TrafficPolicyInUse。
+# 轮询 GetTrafficPolicyInstance，直到返回 NoSuchTrafficPolicyInstance：
+while aws route53 get-traffic-policy-instance --id "$INSTANCE_ID" 2>/dev/null; do
+  echo "等待 Instance 删除..."
+  sleep 5
+done
+echo "Instance 已删除"
 
-# Step 2: 删除策略版本（每个版本单独删除，Instance 必须已完全删除）
+# Step 2: 删除策略版本（每个版本单独删除）
 aws route53 delete-traffic-policy --id "$POLICY_ID" --traffic-policy-version 2
 aws route53 delete-traffic-policy --id "$POLICY_ID" --traffic-policy-version 1
 ```
+
+> **API 参考**：[DeleteTrafficPolicyInstance](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/DeleteTrafficPolicyInstance) | [GetTrafficPolicyInstance](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/GetTrafficPolicyInstance) | [DeleteTrafficPolicy](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/DeleteTrafficPolicy)
 
 ---
 
@@ -383,6 +398,7 @@ aws route53 delete-traffic-policy --id "$POLICY_ID" --traffic-policy-version 1
 ```python
 import json
 import boto3
+from botocore.exceptions import ClientError
 
 r53 = boto3.client("route53")
 
@@ -445,6 +461,8 @@ print(f"Instance 已创建: {instance_id}")
 print("请保存 policy_id 和 instance_id 用于后续操作。")
 ```
 
+> **API 参考**：[CreateTrafficPolicy](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/CreateTrafficPolicy) | [CreateTrafficPolicyInstance](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/CreateTrafficPolicyInstance)
+
 ### 5.2 查看 + 修改权重
 
 ```python
@@ -467,7 +485,8 @@ def list_instances(policy_id=None, policy_version=None):
 
 def update_weights(policy_id, akamai_weight, cf_weight, comment=""):
     """创建新策略版本（修改权重），返回新版本号。"""
-    doc = json.loads(json.dumps(POLICY_DOC))  # 深拷贝，避免修改原始模板
+    import copy
+    doc = copy.deepcopy(POLICY_DOC)
     doc["Rules"]["india_weighted"] = {
         "RuleType": "weighted",
         "Items": [
@@ -502,6 +521,8 @@ def apply_version(instance_id, policy_id, version, ttl=60):
 # apply_version(instance_id, policy_id, v2)
 ```
 
+> **API 参考**：[ListTrafficPolicyInstances](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/ListTrafficPolicyInstances) | [ListTrafficPolicyInstancesByPolicy](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/ListTrafficPolicyInstancesByPolicy) | [CreateTrafficPolicyVersion](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/CreateTrafficPolicyVersion) | [UpdateTrafficPolicyInstance](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/UpdateTrafficPolicyInstance)
+
 ### 5.3 删除/回滚
 
 ```python
@@ -520,13 +541,16 @@ def delete_all(instance_id, policy_id, versions):
     print("Step 1: 删除 Instance...")
     r53.delete_traffic_policy_instance(Id=instance_id)
 
-    # Instance 删除是异步的，需要等待完全删除后才能删策略版本
+    # 轮询 GetTrafficPolicyInstance，直到返回 NoSuchTrafficPolicyInstance
     print("  等待 Instance 删除完成...")
     for _ in range(60):
-        resp = r53.list_traffic_policy_instances()
-        if not any(i["Id"] == instance_id for i in resp["TrafficPolicyInstances"]):
-            break
-        time.sleep(3)
+        try:
+            r53.get_traffic_policy_instance(Id=instance_id)
+            time.sleep(5)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchTrafficPolicyInstance":
+                break
+            raise
     print("  Instance 已删除")
 
     print("Step 2: 删除策略版本...")
@@ -542,6 +566,236 @@ def delete_all(instance_id, policy_id, versions):
 # delete_all(instance_id, policy_id, versions=[1, 2])
 ```
 
+> **API 参考**：[UpdateTrafficPolicyInstance](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/UpdateTrafficPolicyInstance) | [DeleteTrafficPolicyInstance](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/DeleteTrafficPolicyInstance) | [GetTrafficPolicyInstance](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/GetTrafficPolicyInstance) | [DeleteTrafficPolicy](https://docs.aws.amazon.com/goto/boto3/route53-2013-04-01/DeleteTrafficPolicy)
+
+---
+
+## 5b. Java SDK v2 完整代码
+
+> Maven 依赖：`software.amazon.awssdk:route53` 和 `software.amazon.awssdk:servicequotas`。建议使用 BOM 管理版本：
+>
+> ```xml
+> <dependencyManagement>
+>   <dependencies>
+>     <dependency>
+>       <groupId>software.amazon.awssdk</groupId>
+>       <artifactId>bom</artifactId>
+>       <version>2.x.y</version> <!-- 替换为最新版本 -->
+>       <type>pom</type>
+>       <scope>import</scope>
+>     </dependency>
+>   </dependencies>
+> </dependencyManagement>
+>
+> <dependencies>
+>   <dependency>
+>     <groupId>software.amazon.awssdk</groupId>
+>     <artifactId>route53</artifactId>
+>   </dependency>
+>   <dependency>
+>     <groupId>software.amazon.awssdk</groupId>
+>     <artifactId>servicequotas</artifactId>
+>   </dependency>
+> </dependencies>
+> ```
+
+以下代码分为四部分，对应 Python 章节的 5.0–5.3。
+
+### 5b.0 配置参数
+
+```java
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.route53.Route53Client;
+import software.amazon.awssdk.services.route53.model.*;
+import software.amazon.awssdk.services.route53.waiters.Route53Waiter;
+
+// Route 53 是全局服务，Region 用 AWS_GLOBAL 或 US_EAST_1
+Route53Client r53 = Route53Client.builder()
+    .region(Region.AWS_GLOBAL)
+    .build();
+
+String HOSTED_ZONE_ID = "Z1234567890ABC";  // 替换为实际值
+String DOMAIN = "www.example.com";
+
+// Policy Document 是 JSON 字符串，Weight 在 JSON 里是字符串类型
+String POLICY_DOC = """
+    {
+      "AWSPolicyFormatVersion": "2015-10-01",
+      "RecordType": "CNAME",
+      "StartRule": "geo_rule",
+      "Endpoints": {
+        "ep_akamai":     { "Type": "value", "Value": "www.example.com.edgekey.net" },
+        "ep_cloudfront": { "Type": "value", "Value": "d111111abcdef8.cloudfront.net" },
+        "ep_default":    { "Type": "value", "Value": "default-origin.example.com" }
+      },
+      "Rules": {
+        "geo_rule": {
+          "RuleType": "geo",
+          "Locations": [
+            { "Country": "IN", "RuleReference": "india_weighted" },
+            { "Country": "*", "EndpointReference": "ep_default" }
+          ]
+        },
+        "india_weighted": {
+          "RuleType": "weighted",
+          "Items": [
+            { "EndpointReference": "ep_akamai",     "Weight": "1" },
+            { "EndpointReference": "ep_cloudfront", "Weight": "1" }
+          ]
+        }
+      }
+    }
+    """;
+```
+
+### 5b.1 创建策略 + 关联域名
+
+```java
+// === 依赖 5b.0 ===
+
+// 创建 Traffic Policy
+CreateTrafficPolicyResponse policyResp = r53.createTrafficPolicy(
+    CreateTrafficPolicyRequest.builder()
+        .name("geo-weighted-india")
+        .document(POLICY_DOC)
+        .comment("India 50/50 Akamai+CloudFront")
+        .build());
+
+String policyId = policyResp.trafficPolicy().id();
+int policyVersion = policyResp.trafficPolicy().version();
+System.out.println("策略已创建: " + policyId + " v" + policyVersion);
+
+// 创建 Instance（关联域名）
+CreateTrafficPolicyInstanceResponse instanceResp = r53.createTrafficPolicyInstance(
+    CreateTrafficPolicyInstanceRequest.builder()
+        .hostedZoneId(HOSTED_ZONE_ID)
+        .name(DOMAIN)
+        .ttl(60L)
+        .trafficPolicyId(policyId)
+        .trafficPolicyVersion(policyVersion)
+        .build());
+
+String instanceId = instanceResp.trafficPolicyInstance().id();
+System.out.println("Instance 已创建: " + instanceId);
+```
+
+> **API 参考**：[CreateTrafficPolicy](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/CreateTrafficPolicy) | [CreateTrafficPolicyInstance](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/CreateTrafficPolicyInstance)
+
+### 5b.2 查看 + 修改权重
+
+```java
+// === 依赖 5b.0 ===
+
+// 列出所有 Instance
+ListTrafficPolicyInstancesResponse listResp = r53.listTrafficPolicyInstances(
+    ListTrafficPolicyInstancesRequest.builder().build());
+for (TrafficPolicyInstance inst : listResp.trafficPolicyInstances()) {
+    System.out.printf("  %s  State=%s  TTL=%d  Version=%d%n",
+        inst.name(), inst.state(), inst.ttl(), inst.trafficPolicyVersion());
+}
+
+// 创建新版本（修改权重）——替换 JSON 中的 Weight 值
+String updatedDoc = POLICY_DOC
+    .replace("\"ep_akamai\",     \"Weight\": \"1\"", "\"ep_akamai\",     \"Weight\": \"9\"");
+
+CreateTrafficPolicyVersionResponse versionResp = r53.createTrafficPolicyVersion(
+    CreateTrafficPolicyVersionRequest.builder()
+        .id(policyId)
+        .document(updatedDoc)
+        .comment("Changed India weights to 90:10")
+        .build());
+
+int newVersion = versionResp.trafficPolicy().version();
+System.out.println("新版本已创建: v" + newVersion);
+
+// 更新 Instance 指向新版本（零停机，原子切换）
+r53.updateTrafficPolicyInstance(
+    UpdateTrafficPolicyInstanceRequest.builder()
+        .id(instanceId)
+        .ttl(60L)
+        .trafficPolicyId(policyId)
+        .trafficPolicyVersion(newVersion)
+        .build());
+System.out.println("Instance 已更新到 v" + newVersion);
+```
+
+> 生产环境建议用 JSON 库（如 Jackson）操作 Policy Document，而不是字符串替换。
+
+> **API 参考**：[ListTrafficPolicyInstances](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/ListTrafficPolicyInstances) | [CreateTrafficPolicyVersion](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/CreateTrafficPolicyVersion) | [UpdateTrafficPolicyInstance](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/UpdateTrafficPolicyInstance)
+
+### 5b.3 删除/回滚
+
+```java
+// === 依赖 5b.0 ===
+
+// 回滚：更新 Instance 指向旧版本
+r53.updateTrafficPolicyInstance(
+    UpdateTrafficPolicyInstanceRequest.builder()
+        .id(instanceId)
+        .ttl(60L)
+        .trafficPolicyId(policyId)
+        .trafficPolicyVersion(1)  // 旧版本号
+        .build());
+
+// 完整删除：先删 Instance，轮询等待，再删策略版本
+r53.deleteTrafficPolicyInstance(
+    DeleteTrafficPolicyInstanceRequest.builder().id(instanceId).build());
+
+// 轮询 GetTrafficPolicyInstance，直到抛出 NoSuchTrafficPolicyInstanceException
+for (int i = 0; i < 60; i++) {
+    try {
+        r53.getTrafficPolicyInstance(
+            GetTrafficPolicyInstanceRequest.builder().id(instanceId).build());
+        Thread.sleep(5000);
+    } catch (NoSuchTrafficPolicyInstanceException e) {
+        System.out.println("Instance 已删除");
+        break;
+    }
+}
+
+// 逐个删除策略版本（从高到低）
+for (int v : List.of(2, 1)) {
+    r53.deleteTrafficPolicy(
+        DeleteTrafficPolicyRequest.builder()
+            .id(policyId)
+            .version(v)
+            .build());
+    System.out.println("已删除 v" + v);
+}
+```
+
+> **API 参考**：[UpdateTrafficPolicyInstance](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/UpdateTrafficPolicyInstance) | [DeleteTrafficPolicyInstance](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/DeleteTrafficPolicyInstance) | [GetTrafficPolicyInstance](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/GetTrafficPolicyInstance) | [DeleteTrafficPolicy](https://docs.aws.amazon.com/goto/SdkForJavaV2/route53-2013-04-01/DeleteTrafficPolicy)
+
+### 5b.4 查看配额 + 申请提升
+
+```java
+// === Service Quotas（必须用 US_EAST_1 区域）===
+import software.amazon.awssdk.services.servicequotas.ServiceQuotasClient;
+import software.amazon.awssdk.services.servicequotas.model.*;
+
+ServiceQuotasClient sq = ServiceQuotasClient.builder()
+    .region(Region.US_EAST_1)
+    .build();
+
+// 查看 Instance 配额
+GetServiceQuotaResponse quotaResp = sq.getServiceQuota(
+    GetServiceQuotaRequest.builder()
+        .serviceCode("route53")
+        .quotaCode("L-628D5A56")  // Traffic flow policy records (instances)
+        .build());
+System.out.println("Instance 配额: " + quotaResp.quota().value().intValue());
+
+// 申请提升到 20
+sq.requestServiceQuotaIncrease(
+    RequestServiceQuotaIncreaseRequest.builder()
+        .serviceCode("route53")
+        .quotaCode("L-628D5A56")
+        .desiredValue(20.0)
+        .build());
+```
+
+> **API 参考**：[GetServiceQuota](https://docs.aws.amazon.com/goto/SdkForJavaV2/service-quotas-2019-06-24/GetServiceQuota) | [RequestServiceQuotaIncrease](https://docs.aws.amazon.com/goto/SdkForJavaV2/service-quotas-2019-06-24/RequestServiceQuotaIncrease)
+
 ---
 
 ## 6. 验证方法
@@ -555,6 +809,8 @@ aws route53 list-resource-record-sets \
   --hosted-zone-id "$HOSTED_ZONE_ID" \
   --query "ResourceRecordSets[?contains(Name, 'www.example.com')]"
 ```
+
+> **API 参考**：[ListResourceRecordSets](https://docs.aws.amazon.com/goto/cli2/route53-2013-04-01/ListResourceRecordSets)
 
 > Python 等效：
 
@@ -656,6 +912,8 @@ aws service-quotas request-service-quota-increase \
   --region us-east-1
 ```
 
+> **API 参考**：[ListServiceQuotas](https://docs.aws.amazon.com/goto/cli2/service-quotas-2019-06-24/ListServiceQuotas) | [GetServiceQuota](https://docs.aws.amazon.com/goto/cli2/service-quotas-2019-06-24/GetServiceQuota) | [RequestServiceQuotaIncrease](https://docs.aws.amazon.com/goto/cli2/service-quotas-2019-06-24/RequestServiceQuotaIncrease)
+
 > Python 等效：
 
 ```python
@@ -680,13 +938,15 @@ sq.request_service_quota_increase(
 )
 ```
 
+> **API 参考**：[ListServiceQuotas](https://docs.aws.amazon.com/goto/boto3/service-quotas-2019-06-24/ListServiceQuotas) | [GetServiceQuota](https://docs.aws.amazon.com/goto/boto3/service-quotas-2019-06-24/GetServiceQuota) | [RequestServiceQuotaIncrease](https://docs.aws.amazon.com/goto/boto3/service-quotas-2019-06-24/RequestServiceQuotaIncrease)
+
 ---
 
 ## 9. 注意事项
 
 - **策略版本不可修改**：任何变更（权重、端点、规则）都需要创建新版本，然后更新 Instance
 - **Instance 切换是原子操作**：更新 Instance 版本时，Route 53 原子替换底层记录，DNS 持续响应
-- **必须先删 Instance 再删策略**：策略有关联 Instance 时无法删除。且 Instance 删除是**异步**的（状态从 `Applied` → `Deleting` → 消失），需要等完全删除后才能删策略版本，否则会报 `TrafficPolicyInUse` 错误
+- **必须先删 Instance 再删策略**：策略有关联 Instance 时无法删除。Instance 删除后需要轮询 `GetTrafficPolicyInstance` 直到返回 `NoSuchTrafficPolicyInstance`，才能安全删除策略版本，否则会报 `TrafficPolicyInUse` 错误
 - **$50/月/Instance**：每个关联域名收费 $50/月。策略定义和版本本身免费
 - **配额**：每账号最多 50 个 Traffic Policy，每个策略最多 1,000 个版本（软限制，可申请提升）
 - **Weight 是字符串**：`"1"` 不是 `1`，CLI 和 boto3 都要传字符串

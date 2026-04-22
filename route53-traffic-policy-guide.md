@@ -356,6 +356,11 @@ aws route53 create-traffic-policy-version \
   --comment "Changed India weights to 90:10"
 # 返回新的 Version（如 2）
 
+# ⚠️ 更新前确认 Instance 状态为 Applied（Creating/Updating 状态下会报 PriorRequestNotComplete）
+aws route53 get-traffic-policy-instance --id "$INSTANCE_ID" \
+  --query 'TrafficPolicyInstance.State' --output text
+# 返回 "Applied" 后再执行下面的命令
+
 # 更新 Instance 指向新版本（零停机，原子切换）
 INSTANCE_ID="<从 4.3 获取>"
 aws route53 update-traffic-policy-instance \
@@ -505,7 +510,9 @@ def update_weights(policy_id, akamai_weight, cf_weight, comment=""):
 
 
 def apply_version(instance_id, policy_id, version, ttl=60):
-    """将 Instance 切换到指定策略版本（零停机）。"""
+    """将 Instance 切换到指定策略版本（零停机）。
+    调用前确保 Instance 状态为 Applied，否则会报 PriorRequestNotComplete。
+    """
     r53.update_traffic_policy_instance(
         Id=instance_id,
         TTL=ttl,
@@ -708,6 +715,7 @@ CreateTrafficPolicyVersionResponse versionResp = r53.createTrafficPolicyVersion(
 int newVersion = versionResp.trafficPolicy().version();
 System.out.println("新版本已创建: v" + newVersion);
 
+// ⚠️ 更新前确认 Instance 状态为 Applied（Creating/Updating 状态下会报 PriorRequestNotCompleteException）
 // 更新 Instance 指向新版本（零停机，原子切换）
 r53.updateTrafficPolicyInstance(
     UpdateTrafficPolicyInstanceRequest.builder()
@@ -946,6 +954,7 @@ sq.request_service_quota_increase(
 
 - **策略版本不可修改**：任何变更（权重、端点、规则）都需要创建新版本，然后更新 Instance
 - **Instance 切换是原子操作**：更新 Instance 版本时，Route 53 原子替换底层记录，DNS 持续响应
+- **Instance 状态机**：Instance 有 `Creating`、`Applied`、`Updating`、`Failed` 四种状态。创建后需要等 `Applied` 才能更新；更新后也需要等回到 `Applied` 才能再次更新或删除。在 `Creating` 或 `Updating` 状态下调用 `UpdateTrafficPolicyInstance` 会报 `PriorRequestNotComplete` 错误。程序化操作时务必轮询 `GetTrafficPolicyInstance` 确认状态为 `Applied` 后再进行下一步
 - **必须先删 Instance 再删策略**：策略有关联 Instance 时无法删除。Instance 删除后需要轮询 `GetTrafficPolicyInstance` 直到返回 `NoSuchTrafficPolicyInstance`，才能安全删除策略版本，否则会报 `TrafficPolicyInUse` 错误
 - **$50/月/Instance**：每个关联域名收费 $50/月。策略定义和版本本身免费
 - **配额**：每账号最多 50 个 Traffic Policy，每个策略最多 1,000 个版本（软限制，可申请提升）
